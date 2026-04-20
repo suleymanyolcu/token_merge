@@ -191,7 +191,7 @@ def run_benchmark(
     }
 
     stored_features = torch.cat(cached_features, dim=0) if cached_features else None
-    stored_preds = torch.cat(cached_preds, dim=0) if cached_preds, else None
+    stored_preds = torch.cat(cached_preds, dim=0) if cached_preds else None
     return result, stored_features, stored_preds, detail
 
 

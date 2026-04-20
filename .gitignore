@@ -1,0 +1,23 @@
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local editor / OS files
+.DS_Store
+
+# Downloaded datasets and checkpoints
+data/
+*.tar.gz
+*.pth
+
+# Generated benchmark outputs and reports
+outputs/
+outputs_*/
+
+# Matplotlib / misc runtime artifacts
+*.log

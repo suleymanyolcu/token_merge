@@ -1,67 +1,46 @@
 # ToMe on Frozen MAE ViT for CIFAR-100
 
-This is a minimal evaluation-only prototype for checking whether **Token Merging (ToMe)** makes a **frozen MAE-based ViT backbone** more efficient on **CIFAR-100** inputs.
+This repository is a small evaluation-only prototype for testing whether **Token Merging (ToMe)** makes a **frozen MAE-based Vision Transformer** more efficient on **CIFAR-100** images.
 
-The experiment intentionally does **not** do training, fine-tuning, linear probing, or hyperparameter search. CIFAR-100 is used only as an image dataset for inference benchmarking on a pretrained backbone.
+The project does not do training, fine-tuning, linear probing, or hyperparameter search. CIFAR-100 is used only as an image dataset for benchmarking pretrained models at inference time.
 
-## What the experiment does
+## What this project does
 
-- loads the CIFAR-100 test split
-- resizes images to the model input size
-- normalizes inputs with the selected pretrained model's config from `timm`
-- runs baseline inference with a frozen MAE-based ViT
-- runs ToMe-patched inference for a sweep of `r` values
-- records:
-  - total elapsed inference time
-  - throughput in images/sec
-  - mean latency per batch
-  - peak GPU memory in MB when CUDA is available
-  - mean cosine similarity between baseline and ToMe pooled features
-  - optional top-1 agreement only when the checkpoint has a usable classification head
-- saves CSV metrics, plots, and a short text summary
+- loads the CIFAR-100 test split from `torchvision`
+- resizes inputs to the ViT input size
+- runs a baseline MAE-style ViT
+- runs the same model with ToMe applied for several `r` values
+- measures throughput, latency, feature drift, and optional prediction agreement
+- saves CSV metrics, plots, detail files, and a generated Markdown report
 
-## Model choice
-
-The default preset is:
-
-```text
-mae_base_backbone
-```
-
-Available presets:
+## Model options
 
 - `mae_base_backbone`
-  - `timm` MAE-pretrained ViT backbone
-  - returns pooled features
+  - MAE-pretrained `timm` ViT backbone
+  - useful for feature comparisons
   - no usable classification head
 - `mae_base_finetuned_in1k`
-  - modern `timm` ViT-Base architecture
-  - loads the official MAE fine-tuned ImageNet-1K checkpoint from the MAE repo
-  - exposes usable logits, so top-1 agreement is computed
+  - ViT-Base/16 with official MAE fine-tuned ImageNet-1K weights
+  - exposes logits, so top-1 agreement can be measured
 
-The second preset does **not** turn this into CIFAR-100 accuracy evaluation. The logits remain ImageNet-1K predictions; the reported agreement is only baseline-vs-ToMe prediction agreement on the same CIFAR-100 images.
-
-You can select the preset with `--model-preset`.
+Important: even with the classifier-head preset, this is still **not CIFAR-100 accuracy evaluation**. The classifier head predicts ImageNet-1K classes. The reported `top1_agreement` only measures whether ToMe keeps the same top-1 prediction as the baseline on the same CIFAR-100 images.
 
 ## Files
 
-- `eval_tome_mae_cifar100.py`: main evaluation script
-- `generate_report.py`: builds a Markdown report with analysis text, figures, and histograms
-- `utils.py`: dataset, timing, plotting, and feature-comparison helpers
-- `tome_patch.py`: small vendored subset of ToMe adapted for modern `timm`
-- `requirements.txt`: conservative dependency pins
+- `eval_tome_mae_cifar100.py`: main benchmark script
+- `generate_report.py`: builds a Markdown report with plots and histograms
+- `utils.py`: data loading, timing, metrics, and plotting helpers
+- `tome_patch.py`: minimal ToMe patch adapted for modern `timm`
+- `requirements.txt`: pinned environment
+
+Main generated outputs:
+
 - `outputs/metrics.csv`: one row per `r`
-- `outputs/details/`: per-batch and per-sample detail CSVs used for histograms
-- `outputs/summary.txt`: short textual summary
-- `outputs/throughput_vs_r.png`: throughput plot
-- `outputs/latency_vs_r.png`: latency plot
-- `outputs/memory_vs_r.png`: memory plot
-- `outputs/feature_similarity_vs_r.png`: feature cosine similarity plot
-- `outputs/report.md`: generated report after running `generate_report.py`
+- `outputs/details/`: per-batch and per-sample detail CSVs
+- `outputs/*.png`: throughput, latency, memory, and feature-similarity plots
+- `outputs/report.md`: generated report
 
 ## Setup
-
-Create a fresh virtual environment and install dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -72,83 +51,106 @@ pip install -r requirements.txt
 
 ## Run
 
-Quick smoke test on a small subset:
+Backbone-only quick run:
 
 ```bash
 python eval_tome_mae_cifar100.py --num-samples 256 --batch-size 32
 ```
 
-Run the classifier-head preset to also get top-1 agreement:
+Classifier-head run:
 
 ```bash
-python eval_tome_mae_cifar100.py --model-preset mae_base_finetuned_in1k --num-samples 256 --batch-size 32
+python eval_tome_mae_cifar100.py \
+  --model-preset mae_base_finetuned_in1k \
+  --num-samples 10000 \
+  --batch-size 128 \
+  --r-values 0 4 8 12 16 \
+  --output-dir outputs_full_report
 ```
 
-Full CIFAR-100 test split:
+Generate the report:
 
 ```bash
-python eval_tome_mae_cifar100.py --num-samples 10000 --batch-size 128
+python generate_report.py --input-dir outputs_full_report
 ```
 
-CPU-only run:
+CPU-only example:
 
 ```bash
 python eval_tome_mae_cifar100.py --device cpu --batch-size 16 --num-workers 0
 ```
 
-Custom ToMe sweep:
+## Metrics
 
-```bash
-python eval_tome_mae_cifar100.py --r-values 0 4 8 12 16
-```
+For each `r`, the benchmark records:
 
-Generate a report from a real benchmark run:
+- throughput in images/sec
+- mean latency per batch
+- peak GPU memory in MB when CUDA is available
+- mean cosine similarity between baseline and ToMe features
+- top-1 prediction agreement when logits are available
 
-```bash
-python generate_report.py --input-dir outputs
-```
+Interpretation:
 
-This creates:
+- `r=0` is the untouched baseline
+- `r>0` are ToMe-patched runs
+- higher throughput and lower latency mean better efficiency
+- cosine similarity close to `1.0` means ToMe stays close to the baseline representation
+- top-1 agreement close to `1.0` means ToMe keeps the same prediction as the baseline more often
 
-- `outputs/report.md`
-- `outputs/report_assets/batch_latency_histogram.png`
-- `outputs/report_assets/feature_cosine_histogram.png`
-- `outputs/report_assets/throughput_relative_to_baseline.png`
-- `outputs/report_assets/prediction_agreement_by_r.png` when logits are available
+## Example result summary
 
-## Output interpretation
+From the CPU run in `outputs_full_report/` using:
 
-- `metrics.csv`:
-  - `r=0` is the untouched baseline model
-  - `r>0` rows are the ToMe-patched model
-  - `mean_feature_cosine` measures feature drift relative to the baseline on the same images
-  - `top1_agreement` is only meaningful when the selected preset exposes logits
-- `details/`:
-  - `batch_details_r*.csv` stores per-batch latency values
-  - `sample_details_r*.csv` stores per-sample cosine similarity and optional prediction agreement
-- `summary.txt`:
-  - best throughput
-  - lowest latency
-  - memory trend across the sweep
-  - feature-similarity drop as `r` increases
-- `report.md`:
-  - experiment explanation
-  - aggregate table
-  - generated analysis text
-  - references to line plots and histograms
-- plots:
-  - simple first-pass visualizations for efficiency vs `r`
+- dataset: CIFAR-100 test split, 10,000 images
+- preset: `mae_base_finetuned_in1k`
+- input size: `224x224`
+- batch size: `128`
+- sweep: `r = [0, 4, 8, 12, 16]`
 
-## Known limitations
+Aggregate results:
 
-- This is an **inference-efficiency** prototype only. No supervised CIFAR-100 accuracy is measured.
-- CIFAR-100 images are only used as inputs to a frozen pretrained backbone.
-- The default backbone-only preset does not have a usable classification head, so top-1 agreement is unavailable there.
-- The `mae_base_finetuned_in1k` preset downloads the official MAE fine-tuned checkpoint from Meta's public checkpoint host on first use.
-- The original ToMe repository is archived and targeted an older `timm` stack. `tome_patch.py` vendors only the minimal merge logic and a small patch adapted to `timm==0.9.16`.
-- The patched attention path disables fused attention for the ToMe model because merge metrics need explicit attention tensors. This means the comparison is best interpreted as a simple research probe, not a production-grade microbenchmark.
-- GPU memory is only reported when running on CUDA.
-- The report generator should be run on a real benchmark directory, not a smoke-test directory. If you do quick validation runs first, write them to a separate output folder and generate the report only from the final run you want to analyze.
+| Setting | Throughput (img/s) | Mean Latency (ms/batch) | Feature Cosine | Top-1 Agreement |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline (`r=0`) | 41.42 | 2890.73 | 1.0000 | 1.0000 |
+| ToMe `r=4` | 35.38 | 3406.80 | 0.9812 | 0.8642 |
+| ToMe `r=8` | 40.54 | 2950.92 | 0.9467 | 0.7685 |
+| ToMe `r=12` | 47.41 | 2498.21 | 0.8949 | 0.6687 |
+| ToMe `r=16` | 56.73 | 2060.62 | 0.7834 | 0.5261 |
+
+## Main takeaway
+
+ToMe is working in this prototype. As `r` increases, runtime behavior changes noticeably, which means token merging is actually being applied.
+
+The tradeoff from the example run is:
+
+- small `r` values (`4`, `8`) do not help on CPU and can be slower than baseline
+- larger `r` values (`12`, `16`) improve throughput and reduce latency
+- stronger merging also increases feature drift and lowers prediction agreement
+
+In this run:
+
+- best speed came from `r=16`
+- a more moderate tradeoff looked like `r=12`
+
+Supporting figures from `outputs_full_report/`:
+
+- `throughput_vs_r.png`
+- `latency_vs_r.png`
+- `feature_similarity_vs_r.png`
+- `report_assets/throughput_relative_to_baseline.png`
+- `report_assets/batch_latency_histogram.png`
+- `report_assets/feature_cosine_histogram.png`
+- `report_assets/prediction_agreement_by_r.png`
+
+## Limitations
+
+- inference-only prototype
+- no supervised CIFAR-100 accuracy
+- single-model, single-process benchmark
+- GPU memory is only reported on CUDA runs
+- ToMe is adapted from an older archived repo, so this is a research prototype rather than a production benchmark
+- the classifier-head comparison is agreement with the baseline, not ground-truth correctness
 
 ## Scope reminder
 
@@ -158,4 +160,3 @@ This creates:
 - no linear probe
 - no hyperparameter search
 
-Feature similarity is used here as a lightweight proxy for output preservation while testing whether ToMe improves inference efficiency on CIFAR-100-shaped workloads.

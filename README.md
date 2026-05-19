@@ -1,17 +1,23 @@
 # ToMe on Frozen MAE ViT for CIFAR-100
 
-This repository is a small evaluation-only prototype for testing whether **Token Merging (ToMe)** makes a **frozen MAE-based Vision Transformer** more efficient on **CIFAR-100** images.
+This repository is a small evaluation-only prototype for testing whether
+**Token Merging (ToMe)** makes a **frozen MAE-based Vision Transformer** more
+efficient on **CIFAR-100** images.
 
-The project does not do training, fine-tuning, linear probing, or hyperparameter search. CIFAR-100 is used only as an image dataset for benchmarking pretrained models at inference time.
+The project does not do training, fine-tuning, linear probing, or
+hyperparameter search. CIFAR-100 is used only as an image dataset for
+benchmarking pretrained models at inference time.
 
 ## What this project does
 
 - loads the CIFAR-100 test split from `torchvision`
-- resizes inputs to the ViT input size
+- resizes inputs from `32x32` to the ViT input size, usually `224x224`
 - runs a baseline MAE-style ViT
 - runs the same model with ToMe applied for several `r` values
 - measures throughput, latency, feature drift, and optional prediction agreement
-- saves CSV metrics, plots, detail files, and a generated Markdown report
+- saves CSV metrics, detail files, plots, and a text summary
+
+This is an **inference efficiency study**, not a CIFAR-100 accuracy benchmark.
 
 ## Model options
 
@@ -21,14 +27,17 @@ The project does not do training, fine-tuning, linear probing, or hyperparameter
   - no usable classification head
 - `mae_base_finetuned_in1k`
   - ViT-Base/16 with official MAE fine-tuned ImageNet-1K weights
+  - about 86.6 million parameters
   - exposes logits, so top-1 agreement can be measured
 
-Important: even with the classifier-head preset, this is still **not CIFAR-100 accuracy evaluation**. The classifier head predicts ImageNet-1K classes. The reported `top1_agreement` only measures whether ToMe keeps the same top-1 prediction as the baseline on the same CIFAR-100 images.
+Important: even with the classifier-head preset, this is still **not CIFAR-100
+accuracy evaluation**. The classifier head predicts ImageNet-1K classes. The
+reported `top1_agreement` only measures whether ToMe keeps the same top-1
+prediction as the baseline on the same CIFAR-100 images.
 
 ## Files
 
 - `eval_tome_mae_cifar100.py`: main benchmark script
-- `generate_report.py`: builds a Markdown report with plots and histograms
 - `utils.py`: data loading, timing, metrics, and plotting helpers
 - `tome_patch.py`: minimal ToMe patch adapted for modern `timm`
 - `requirements.txt`: pinned environment
@@ -36,9 +45,9 @@ Important: even with the classifier-head preset, this is still **not CIFAR-100 a
 Main generated outputs:
 
 - `outputs/metrics.csv`: one row per `r`
+- `outputs/summary.txt`: short benchmark summary
 - `outputs/details/`: per-batch and per-sample detail CSVs
 - `outputs/*.png`: throughput, latency, memory, and feature-similarity plots
-- `outputs/report.md`: generated report
 
 ## Setup
 
@@ -66,12 +75,6 @@ python eval_tome_mae_cifar100.py \
   --batch-size 128 \
   --r-values 0 4 8 12 16 \
   --output-dir outputs_full_report
-```
-
-Generate the report:
-
-```bash
-python generate_report.py --input-dir outputs_full_report
 ```
 
 CPU-only example:
@@ -104,6 +107,8 @@ From the CPU run in `outputs_full_report/` using:
 
 - dataset: CIFAR-100 test split, 10,000 images
 - preset: `mae_base_finetuned_in1k`
+- model: ViT-Base/16 with official MAE fine-tuned ImageNet-1K weights
+- parameters: about 86.6 million
 - input size: `224x224`
 - batch size: `128`
 - sweep: `r = [0, 4, 8, 12, 16]`
@@ -118,37 +123,62 @@ Aggregate results:
 | ToMe `r=12` | 47.41 | 2498.21 | 0.8949 | 0.6687 |
 | ToMe `r=16` | 56.73 | 2060.62 | 0.7834 | 0.5261 |
 
+The earlier `outputs/metrics.csv` run and the full `outputs_full_report/metrics.csv`
+run are numerically close, which suggests the result is stable enough for a
+first-pass CPU experiment.
+
+## What the results mean
+
+ToMe is clearly active. If it had failed or behaved like a no-op, throughput,
+latency, feature cosine similarity, and prediction agreement would remain almost
+unchanged. Instead, all of them change as `r` increases.
+
+Small ToMe settings did not help on CPU:
+
+- `r=4` was slower than the baseline
+- `r=8` was still slightly worse than the baseline
+- the matching and merging overhead can outweigh the benefit when reduction is too small
+
+Larger token merging improved efficiency:
+
+- `r=12` increased throughput from 41.42 to 47.41 img/s, about +14.5%
+- `r=16` increased throughput from 41.42 to 56.73 img/s, about +37.0%
+- latency dropped from 2890.73 ms/batch at baseline to 2060.62 ms/batch at `r=16`,
+  about a 28.7% reduction
+
+The efficiency gains came with output drift:
+
+- feature cosine dropped from 0.9812 at `r=4` to 0.7834 at `r=16`
+- top-1 agreement with the baseline dropped from 0.8642 at `r=4` to 0.5261 at `r=16`
+- for `r=16`, the 10th percentile cosine was about 0.706 and the minimum observed
+  cosine was about 0.463
+
+The histograms in `outputs_full_report/report_assets/` show the same trend:
+
+- batch latency shifts lower at higher `r`
+- feature cosine stays close to baseline at `r=4`
+- feature cosine spreads lower at `r=12`
+- feature cosine shifts much lower and broadens at `r=16`
+
 ## Main takeaway
 
-ToMe is working in this prototype. As `r` increases, runtime behavior changes noticeably, which means token merging is actually being applied.
+Token Merging improves inference efficiency in this setup only when the reduction
+is strong enough. On this CPU-based CIFAR-100 inference experiment with a frozen
+MAE-based ViT, `r=16` gave the best speedup but also the largest drop in feature
+similarity and baseline prediction agreement.
 
-The tradeoff from the example run is:
+The practical tradeoff from this run is:
 
-- small `r` values (`4`, `8`) do not help on CPU and can be slower than baseline
-- larger `r` values (`12`, `16`) improve throughput and reduce latency
-- stronger merging also increases feature drift and lowers prediction agreement
-
-In this run:
-
-- best speed came from `r=16`
-- a more moderate tradeoff looked like `r=12`
-
-Supporting figures from `outputs_full_report/`:
-
-- `throughput_vs_r.png`
-- `latency_vs_r.png`
-- `feature_similarity_vs_r.png`
-- `report_assets/throughput_relative_to_baseline.png`
-- `report_assets/batch_latency_histogram.png`
-- `report_assets/feature_cosine_histogram.png`
-- `report_assets/prediction_agreement_by_r.png`
+- if maximum speed is the priority, `r=16` is the best result
+- if keeping outputs closer to the baseline matters more, `r=12` is a more moderate setting
 
 ## Limitations
 
 - inference-only prototype
+- CPU-only example run; no GPU memory measurements were available
 - no supervised CIFAR-100 accuracy
+- CIFAR-100 is only used as an input dataset
 - single-model, single-process benchmark
-- GPU memory is only reported on CUDA runs
 - ToMe is adapted from an older archived repo, so this is a research prototype rather than a production benchmark
 - the classifier-head comparison is agreement with the baseline, not ground-truth correctness
 
@@ -159,4 +189,3 @@ Supporting figures from `outputs_full_report/`:
 - no fine-tuning
 - no linear probe
 - no hyperparameter search
-

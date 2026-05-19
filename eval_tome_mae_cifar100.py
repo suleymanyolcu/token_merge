@@ -8,9 +8,12 @@ import torch
 
 from tome_patch import apply_patch
 from utils import (
+    build_cifar100_loader,
     build_eval_loader,
     count_parameters,
+    extract_feature_bank,
     has_usable_logits,
+    knn_top1_accuracy,
     resolve_device,
     run_benchmark,
     save_plots,
@@ -49,6 +52,18 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible subsets.")
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:0.")
     parser.add_argument("--r-values", type=int, nargs="+", default=DEFAULT_R_VALUES, help="ToMe reduction values.")
+    parser.add_argument(
+        "--measure-cifar100-accuracy",
+        action="store_true",
+        help="Measure CIFAR-100 top-1 accuracy with a frozen-feature kNN classifier.",
+    )
+    parser.add_argument(
+        "--knn-train-samples",
+        type=int,
+        default=5000,
+        help="Number of CIFAR-100 train images used as the kNN feature bank. Use 50000 for the full train split.",
+    )
+    parser.add_argument("--knn-k", type=int, default=20, help="Number of nearest neighbors for CIFAR-100 kNN accuracy.")
     return parser.parse_args()
 
 
@@ -101,6 +116,15 @@ def build_summary(df: pd.DataFrame, device: torch.device, model_name: str, param
     else:
         lines.append(f"Top-1 agreement: {agreement.iloc[-1]:.4f} at r={int(df['r'][agreement.index[-1]])}")
 
+    if "cifar100_knn_top1_accuracy" in df.columns:
+        accuracy = df["cifar100_knn_top1_accuracy"].dropna()
+        if not accuracy.empty:
+            best_acc = df.loc[df["cifar100_knn_top1_accuracy"].idxmax()]
+            lines.append(
+                f"CIFAR-100 kNN top-1 accuracy: best r={int(best_acc['r'])} -> "
+                f"{best_acc['cifar100_knn_top1_accuracy']:.4f}"
+            )
+
     return "\n".join(lines) + "\n"
 
 
@@ -128,6 +152,13 @@ def write_detail_files(output_dir: Path, r: int, detail: dict, num_samples: int,
     sample_df.to_csv(detail_dir / f"sample_details_r{r}.csv", index=False)
 
 
+def collect_loader_labels(loader):
+    labels = []
+    for _, targets in loader:
+        labels.extend(targets.tolist())
+    return torch.tensor(labels, dtype=torch.long)
+
+
 def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
@@ -153,6 +184,20 @@ def main():
         seed=args.seed,
         pin_memory=device.type == "cuda",
     )
+    train_loader = None
+    test_labels = None
+    if args.measure_cifar100_accuracy:
+        train_loader, _ = build_cifar100_loader(
+            model=baseline_model,
+            data_dir=args.data_dir,
+            train=True,
+            num_samples=args.knn_train_samples,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            seed=args.seed,
+            pin_memory=device.type == "cuda",
+        )
+        test_labels = collect_loader_labels(loader)
 
     param_count = count_parameters(baseline_model)
     image_size = data_config["input_size"][1:]
@@ -185,6 +230,15 @@ def main():
     baseline_metrics["mean_feature_cosine"] = 1.0
     if has_usable_logits(baseline_model):
         baseline_metrics["top1_agreement"] = 1.0
+    if args.measure_cifar100_accuracy:
+        train_features, train_labels = extract_feature_bank(baseline_model, train_loader, device)
+        baseline_metrics["cifar100_knn_top1_accuracy"] = knn_top1_accuracy(
+            train_features=train_features,
+            train_labels=train_labels,
+            test_features=baseline_features,
+            test_labels=test_labels,
+            k=args.knn_k,
+        )
     rows.append(baseline_metrics)
 
     usable_logits = has_usable_logits(baseline_model)
@@ -198,14 +252,24 @@ def main():
             continue
 
         patched_model.r = r
-        metrics, _, _, detail = run_benchmark(
+        metrics, tome_features, _, detail = run_benchmark(
             model=patched_model,
             loader=loader,
             device=device,
             warmup_batches=args.warmup_batches,
             baseline_features=baseline_features,
             baseline_preds=baseline_preds if usable_logits else None,
+            cache_features=args.measure_cifar100_accuracy,
         )
+        if args.measure_cifar100_accuracy:
+            train_features, train_labels = extract_feature_bank(patched_model, train_loader, device)
+            metrics["cifar100_knn_top1_accuracy"] = knn_top1_accuracy(
+                train_features=train_features,
+                train_labels=train_labels,
+                test_features=tome_features,
+                test_labels=test_labels,
+                k=args.knn_k,
+            )
         metrics.update(
             {
                 "variant": "tome",
@@ -247,8 +311,10 @@ def main():
         "peak_gpu_memory_mb",
         "mean_feature_cosine",
         "top1_agreement",
+        "cifar100_knn_top1_accuracy",
     ]
-    print(df[display_cols].to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+    existing_display_cols = [col for col in display_cols if col in df.columns]
+    print(df[existing_display_cols].to_string(index=False, float_format=lambda x: f"{x:.4f}"))
     print(f"\nSaved metrics to {csv_path}")
     print(f"Saved summary to {output_dir / 'summary.txt'}")
 

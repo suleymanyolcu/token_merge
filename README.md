@@ -14,10 +14,12 @@ benchmarking pretrained models at inference time.
 - resizes inputs from `32x32` to the ViT input size, usually `224x224`
 - runs a baseline MAE-style ViT
 - runs the same model with ToMe applied for several `r` values
-- measures throughput, latency, feature drift, and optional prediction agreement
+- measures throughput, latency, feature drift, optional prediction agreement, and optional CIFAR-100 kNN accuracy
 - saves CSV metrics, detail files, plots, and a text summary
 
-This is an **inference efficiency study**, not a CIFAR-100 accuracy benchmark.
+This is primarily an **inference efficiency study**. CIFAR-100 accuracy can be
+measured with the optional frozen-feature kNN path, but the project still does
+not train or fine-tune the ViT.
 
 ## Model options
 
@@ -34,6 +36,11 @@ Important: even with the classifier-head preset, this is still **not CIFAR-100
 accuracy evaluation**. The classifier head predicts ImageNet-1K classes. The
 reported `top1_agreement` only measures whether ToMe keeps the same top-1
 prediction as the baseline on the same CIFAR-100 images.
+
+For actual CIFAR-100 labels, use `--measure-cifar100-accuracy`. That option
+extracts frozen ViT features for CIFAR-100 train and test images, classifies each
+test image by k-nearest neighbors in feature space, and reports
+`cifar100_knn_top1_accuracy`.
 
 ## Files
 
@@ -83,6 +90,25 @@ CPU-only example:
 python eval_tome_mae_cifar100.py --device cpu --batch-size 16 --num-workers 0
 ```
 
+CIFAR-100 kNN accuracy example:
+
+```bash
+python eval_tome_mae_cifar100.py \
+  --model-preset mae_base_finetuned_in1k \
+  --device cpu \
+  --num-samples 200 \
+  --batch-size 32 \
+  --warmup-batches 1 \
+  --r-values 0 8 16 \
+  --measure-cifar100-accuracy \
+  --knn-train-samples 500 \
+  --knn-k 5 \
+  --output-dir outputs_cifar100_accuracy_smoke
+```
+
+For a fuller run, increase `--num-samples` toward `10000` and
+`--knn-train-samples` toward `50000`.
+
 ## Metrics
 
 For each `r`, the benchmark records:
@@ -92,6 +118,7 @@ For each `r`, the benchmark records:
 - peak GPU memory in MB when CUDA is available
 - mean cosine similarity between baseline and ToMe features
 - top-1 prediction agreement when logits are available
+- CIFAR-100 kNN top-1 accuracy when `--measure-cifar100-accuracy` is enabled
 
 Interpretation:
 
@@ -100,6 +127,7 @@ Interpretation:
 - higher throughput and lower latency mean better efficiency
 - cosine similarity close to `1.0` means ToMe stays close to the baseline representation
 - top-1 agreement close to `1.0` means ToMe keeps the same prediction as the baseline more often
+- CIFAR-100 kNN accuracy measures true CIFAR-100 label accuracy using frozen features, not the ImageNet-1K classifier head
 
 ## Example result summary
 
@@ -126,6 +154,21 @@ Aggregate results:
 The earlier `outputs/metrics.csv` run and the full `outputs_full_report/metrics.csv`
 run are numerically close, which suggests the result is stable enough for a
 first-pass CPU experiment.
+
+## CIFAR-100 accuracy smoke result
+
+I also ran a small CPU smoke test with `--measure-cifar100-accuracy`, 200 CIFAR-100
+test images, a 500-image CIFAR-100 train feature bank, and `k=5`.
+
+| Setting | Throughput (img/s) | Mean Latency (ms/batch) | Feature Cosine | Top-1 Agreement | CIFAR-100 kNN Top-1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline (`r=0`) | 33.22 | 843.52 | 1.0000 | 1.0000 | 0.5300 |
+| ToMe `r=8` | 31.03 | 904.43 | 0.9472 | 0.8100 | 0.5400 |
+| ToMe `r=16` | 46.56 | 597.15 | 0.7804 | 0.5450 | 0.3650 |
+
+These numbers are only a smoke-test result because the kNN train bank and test
+set are small. They verify that true CIFAR-100 accuracy is now measured and
+written to `metrics.csv`.
 
 ## What the results mean
 
@@ -176,8 +219,8 @@ The practical tradeoff from this run is:
 
 - inference-only prototype
 - CPU-only example run; no GPU memory measurements were available
-- no supervised CIFAR-100 accuracy
-- CIFAR-100 is only used as an input dataset
+- CIFAR-100 kNN accuracy is optional and depends on the chosen train-bank size
+- no supervised CIFAR-100 training or fine-tuning
 - single-model, single-process benchmark
 - ToMe is adapted from an older archived repo, so this is a research prototype rather than a production benchmark
 - the classifier-head comparison is agreement with the baseline, not ground-truth correctness

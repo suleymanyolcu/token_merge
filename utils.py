@@ -79,6 +79,42 @@ def build_eval_loader(
     return loader, data_config
 
 
+def build_cifar100_loader(
+    model: nn.Module,
+    data_dir: str,
+    train: bool,
+    num_samples: int,
+    batch_size: int,
+    num_workers: int,
+    seed: int,
+    pin_memory: bool,
+):
+    data_config = resolve_model_data_config(model)
+    image_size = data_config["input_size"][1:]
+    transform = transforms.Compose(
+        [
+            transforms.Resize(image_size, interpolation=_get_interpolation(data_config.get("interpolation", "bicubic"))),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=data_config["mean"], std=data_config["std"]),
+        ]
+    )
+
+    dataset = datasets.CIFAR100(root=data_dir, train=train, transform=transform, download=True)
+    if num_samples and num_samples < len(dataset):
+        generator = torch.Generator().manual_seed(seed)
+        indices = torch.randperm(len(dataset), generator=generator)[:num_samples].tolist()
+        dataset = Subset(dataset, indices)
+
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    return loader, data_config
+
+
 def extract_features_and_logits(model: nn.Module, images: torch.Tensor):
     tokens = model.forward_features(images)
     if hasattr(model, "forward_head"):
@@ -106,6 +142,7 @@ def run_benchmark(
     warmup_batches: int,
     baseline_features: torch.Tensor = None,
     baseline_preds: torch.Tensor = None,
+    cache_features: bool = False,
 ):
     model.eval()
     model.to(device)
@@ -147,9 +184,10 @@ def run_benchmark(
         batch_size = features_cpu.shape[0]
         total_images += batch_size
 
-        if baseline_features is None:
+        if baseline_features is None or cache_features:
             cached_features.append(features_cpu)
-        else:
+
+        if baseline_features is not None:
             reference = baseline_features[feature_offset: feature_offset + batch_size]
             batch_cosine = F.cosine_similarity(features_cpu, reference, dim=1)
             cosine_sum += batch_cosine.sum().item()
@@ -193,6 +231,50 @@ def run_benchmark(
     stored_features = torch.cat(cached_features, dim=0) if cached_features else None
     stored_preds = torch.cat(cached_preds, dim=0) if cached_preds else None
     return result, stored_features, stored_preds, detail
+
+
+@torch.no_grad()
+def extract_feature_bank(model: nn.Module, loader: DataLoader, device: torch.device):
+    model.eval()
+    model.to(device)
+
+    features = []
+    labels = []
+    for images, targets in loader:
+        images = images.to(device, non_blocking=device.type == "cuda")
+        batch_features, _ = extract_features_and_logits(model, images)
+        features.append(batch_features.detach().float().cpu())
+        labels.append(targets.detach().cpu())
+
+    return torch.cat(features, dim=0), torch.cat(labels, dim=0)
+
+
+def knn_top1_accuracy(
+    train_features: torch.Tensor,
+    train_labels: torch.Tensor,
+    test_features: torch.Tensor,
+    test_labels: torch.Tensor,
+    k: int,
+    chunk_size: int = 256,
+) -> float:
+    train_features = F.normalize(train_features.float(), dim=1)
+    test_features = F.normalize(test_features.float(), dim=1)
+    train_labels = train_labels.long()
+    test_labels = test_labels.long()
+    k = min(k, train_features.shape[0])
+
+    correct = 0
+    for start in range(0, test_features.shape[0], chunk_size):
+        chunk = test_features[start: start + chunk_size]
+        similarity = chunk @ train_features.T
+        _, indices = similarity.topk(k, dim=1)
+        neighbor_labels = train_labels[indices]
+        votes = torch.zeros(chunk.shape[0], 100, dtype=torch.int64)
+        votes.scatter_add_(1, neighbor_labels, torch.ones_like(neighbor_labels, dtype=torch.int64))
+        preds = votes.argmax(dim=1)
+        correct += (preds == test_labels[start: start + chunk_size]).sum().item()
+
+    return correct / test_labels.numel()
 
 
 def save_plots(df, output_dir: Path) -> None:

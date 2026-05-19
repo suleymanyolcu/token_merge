@@ -99,7 +99,7 @@ python eval_tome_mae_cifar100.py \
   --num-samples 200 \
   --batch-size 32 \
   --warmup-batches 1 \
-  --r-values 0 8 16 \
+  --r-values 0 4 8 12 16 \
   --measure-cifar100-accuracy \
   --knn-train-samples 500 \
   --knn-k 5 \
@@ -162,9 +162,11 @@ test images, a 500-image CIFAR-100 train feature bank, and `k=5`.
 
 | Setting | Throughput (img/s) | Mean Latency (ms/batch) | Feature Cosine | Top-1 Agreement | CIFAR-100 kNN Top-1 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Baseline (`r=0`) | 33.22 | 843.52 | 1.0000 | 1.0000 | 0.5300 |
-| ToMe `r=8` | 31.03 | 904.43 | 0.9472 | 0.8100 | 0.5400 |
-| ToMe `r=16` | 46.56 | 597.15 | 0.7804 | 0.5450 | 0.3650 |
+| Baseline (`r=0`) | 32.95 | 850.74 | 1.0000 | 1.0000 | 0.5300 |
+| ToMe `r=4` | 26.49 | 1062.01 | 0.9812 | 0.8850 | 0.5250 |
+| ToMe `r=8` | 31.14 | 901.06 | 0.9472 | 0.8100 | 0.5400 |
+| ToMe `r=12` | 37.96 | 736.12 | 0.8952 | 0.7200 | 0.4700 |
+| ToMe `r=16` | 45.84 | 606.04 | 0.7804 | 0.5450 | 0.3650 |
 
 These numbers are only a smoke-test result because the kNN train bank and test
 set are small. They verify that true CIFAR-100 accuracy is now measured and
